@@ -1081,7 +1081,9 @@ tr.warnrow td{background:#FDF8E8 !important;}
   // 1. Import Firebase khusus untuk file HTML biasa
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
   import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-database.js";
-  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged,
+           setPersistence, browserLocalPersistence, sendPasswordResetEmail }
+    from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
   // 2. KTP Firebase kamu nih!
   const firebaseConfig = {
@@ -1108,23 +1110,179 @@ tr.warnrow td{background:#FDF8E8 !important;}
   window.firebaseSet = set;
   window.firebaseOnValue = onValue;
 
-  // 6. Masuk sebagai pengguna anonim. Rules butuh ini supaya database boleh
-  //    dikunci dari orang luar tanpa memaksa pengguna membuat akun.
+  // 6. Login dengan akun. Sesi disimpan di perangkat supaya pegawai tidak
+  //    perlu mengetik ulang tiap pagi.
   const auth = getAuth(app);
   window.firebaseAuth = auth;
+
+  window.fbMasuk = (email, sandi) =>
+    setPersistence(auth, browserLocalPersistence)
+      .then(() => signInWithEmailAndPassword(auth, email, sandi));
+  window.fbKeluar   = () => signOut(auth);
+  window.fbResetSandi = email => sendPasswordResetEmail(auth, email);
+
   window.firebaseSiap = new Promise(resolve => {
-    let selesai = false;
-    const beres = v => { if (!selesai) { selesai = true; resolve(v); } };
-    onAuthStateChanged(auth, user => { if (user) { window.firebaseUser = user; beres(user); } });
-    signInAnonymously(auth).catch(err => {
-      window.firebaseAuthError = err;
-      console.error('Login anonim gagal:', err.code || err.message,
-        '\nAktifkan Authentication > Sign-in method > Anonymous di Firebase Console, '
-        + 'lalu tambahkan domain situs ini di Authentication > Settings > Authorized domains.');
-      beres(null);
+    let pertama = true;
+    onAuthStateChanged(auth, user => {
+      window.firebaseUser = user || null;
+      if (pertama) { pertama = false; resolve(user || null); }
+      document.dispatchEvent(new CustomEvent('lc-auth', { detail: user || null }));
     });
-    setTimeout(() => beres(null), 8000);   // jangan menggantung kalau jaringan mati
   });
+</script>
+
+<script>
+/* ============================================================
+   GERBANG MASUK
+   Pemeriksaan kata sandi terjadi di server Firebase, bukan di
+   halaman ini. Kode di bawah hanya mengurus tampilan; yang
+   benar-benar menjaga data adalah Rules di Realtime Database,
+   yang menolak permintaan tanpa token yang sah.
+============================================================ */
+(function () {
+  const el = document.createElement('div');
+  el.id = 'lc-gate';
+  el.innerHTML =
+    '<div class="lc-gate-card">'
+  +   '<div class="lc-gate-mark"></div>'
+  +   '<h1>Lazy Civileng</h1>'
+  +   '<p class="lc-gate-sub">Prakasa Group &middot; perangkat kerja teknik sipil</p>'
+  +   '<div class="lc-gate-form" hidden>'
+  +     '<label for="lc-gate-email">Email</label>'
+  +     '<input id="lc-gate-email" type="email" autocomplete="username" placeholder="nama@prakasa.co.id" />'
+  +     '<label for="lc-gate-sandi">Kata sandi</label>'
+  +     '<input id="lc-gate-sandi" type="password" autocomplete="current-password" placeholder="••••••••" />'
+  +     '<button id="lc-gate-masuk" type="button">Masuk</button>'
+  +     '<button id="lc-gate-lupa" type="button" class="tautan">Lupa kata sandi</button>'
+  +     '<p id="lc-gate-pesan" class="lc-gate-pesan"></p>'
+  +   '</div>'
+  +   '<p class="lc-gate-tunggu">Memeriksa sesi&hellip;</p>'
+  + '</div>';
+
+  const gaya = document.createElement('style');
+  gaya.textContent =
+   '#lc-gate{position:fixed;inset:0;z-index:99990;display:grid;place-items:center;padding:24px;'
+  +'background:#005B52;font-family:Archivo,system-ui,sans-serif;overflow:auto}'
+  +'#lc-gate[hidden]{display:none}'
+  +'.lc-gate-card{width:min(380px,100%);background:#EFEFEF;border-radius:20px;padding:32px 28px;'
+  +'box-shadow:0 18px 50px rgba(0,25,22,.35);text-align:center}'
+  +'.lc-gate-mark img{width:56px;height:56px;object-fit:contain;margin-bottom:14px}'
+  +'#lc-gate h1{margin:0;font-size:23px;font-weight:800;letter-spacing:-.01em;color:#0B1F1B}'
+  +'.lc-gate-sub{margin:6px 0 24px;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:#5F6E68}'
+  +'.lc-gate-form{text-align:left}'
+  +'.lc-gate-form label{display:block;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;'
+  +'color:#5F6E68;margin:0 0 5px;font-weight:600}'
+  +'.lc-gate-form input{width:100%;box-sizing:border-box;padding:12px 13px;margin-bottom:16px;'
+  +'border:1.5px solid #C3CDC5;border-radius:9px;background:#fff;font:inherit;font-size:14.5px;color:#0B1F1B}'
+  +'.lc-gate-form input:focus{outline:none;border-color:#005B52;box-shadow:0 0 0 3px rgba(219,242,38,.55)}'
+  +'#lc-gate-masuk{width:100%;padding:13px;border:0;border-radius:9px;background:#005B52;color:#DBF226;'
+  +'font:inherit;font-size:14.5px;font-weight:800;cursor:pointer;letter-spacing:.01em}'
+  +'#lc-gate-masuk:hover{background:#00483F}'
+  +'#lc-gate-masuk:disabled{opacity:.6;cursor:progress}'
+  +'#lc-gate-lupa{display:block;margin:14px auto 0;background:none;border:0;color:#5F6E68;'
+  +'font:inherit;font-size:12px;text-decoration:underline;cursor:pointer}'
+  +'#lc-gate-lupa:hover{color:#005B52}'
+  +'.lc-gate-pesan{margin:16px 0 0;font-size:12.5px;line-height:1.5;min-height:1em}'
+  +'.lc-gate-pesan.buruk{color:#B3261E}.lc-gate-pesan.baik{color:#005B52}'
+  +'.lc-gate-tunggu{margin:0;font-size:12.5px;color:#5F6E68}'
+  +'#lc-akun{position:fixed;left:14px;bottom:14px;z-index:9997;display:none;align-items:center;gap:9px;'
+  +'padding:7px 9px 7px 13px;border-radius:999px;background:#EFEFEF;border:1.5px solid #C3CDC5;'
+  +'font:600 11.5px/1 Archivo,system-ui,sans-serif;color:#5F6E68;box-shadow:0 2px 10px rgba(0,44,40,.12)}'
+  +'#lc-akun.tampil{display:flex}'
+  +'#lc-akun button{border:0;border-radius:999px;padding:5px 11px;background:#005B52;color:#DBF226;'
+  +'font:inherit;font-weight:700;cursor:pointer}'
+  +'#lc-akun button:hover{background:#00483F}';
+
+  document.head.appendChild(gaya);
+  document.body.appendChild(el);
+
+  const akun = document.createElement('div');
+  akun.id = 'lc-akun';
+  akun.innerHTML = '<span id="lc-akun-nama"></span><button type="button" id="lc-akun-keluar">Keluar</button>';
+  document.body.appendChild(akun);
+
+  const form   = el.querySelector('.lc-gate-form');
+  const tunggu = el.querySelector('.lc-gate-tunggu');
+  const pesan  = el.querySelector('#lc-gate-pesan');
+  const email  = el.querySelector('#lc-gate-email');
+  const sandi  = el.querySelector('#lc-gate-sandi');
+  const masuk  = el.querySelector('#lc-gate-masuk');
+
+  /* Pinjam logo yang sudah ada di halaman, jangan gandakan datanya. */
+  const asli = document.querySelector('.lc-heromark, .lc-mark');
+  if (asli) el.querySelector('.lc-gate-mark').appendChild(asli.cloneNode());
+
+  const KATA = {
+    'auth/invalid-email'        : 'Alamat email tidak sah.',
+    'auth/user-not-found'       : 'Email atau kata sandi salah.',
+    'auth/wrong-password'       : 'Email atau kata sandi salah.',
+    'auth/invalid-credential'   : 'Email atau kata sandi salah.',
+    'auth/user-disabled'        : 'Akun ini dinonaktifkan. Hubungi pengelola.',
+    'auth/too-many-requests'    : 'Terlalu banyak percobaan. Tunggu beberapa menit.',
+    'auth/network-request-failed':'Jaringan tidak terjangkau. Periksa sinyal.',
+    'auth/operation-not-allowed': 'Metode Email/Password belum diaktifkan di Firebase Console.',
+    'auth/unauthorized-domain'  : 'Domain ini belum terdaftar di Authorized domains.',
+    'auth/missing-password'     : 'Kata sandi belum diisi.'
+  };
+  const bilang = (teks, kelas) => { pesan.textContent = teks; pesan.className = 'lc-gate-pesan ' + (kelas || ''); };
+
+  function tampilkanForm(){
+    tunggu.hidden = true; form.hidden = false;
+    setTimeout(()=>email.focus(), 60);
+  }
+
+  masuk.addEventListener('click', () => {
+    const e = email.value.trim(), k = sandi.value;
+    if (!e || !k) { bilang('Isi email dan kata sandi dulu.', 'buruk'); return; }
+    masuk.disabled = true; bilang('Menghubungkan…');
+    window.fbMasuk(e, k)
+      .catch(err => {
+        masuk.disabled = false;
+        bilang(KATA[err.code] || ('Gagal masuk: ' + (err.code || err.message)), 'buruk');
+        sandi.value = ''; sandi.focus();
+      });
+  });
+
+  el.querySelector('#lc-gate-lupa').addEventListener('click', () => {
+    const e = email.value.trim();
+    if (!e) { bilang('Isi kolom email dulu, tautan setel ulang dikirim ke sana.', 'buruk'); return; }
+    window.fbResetSandi(e)
+      .then(()=> bilang('Tautan setel ulang dikirim ke ' + e + '. Periksa kotak masuk.', 'baik'))
+      .catch(err => bilang(KATA[err.code] || ('Gagal mengirim: ' + (err.code || err.message)), 'buruk'));
+  });
+
+  [email, sandi].forEach(i => i.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') masuk.click();
+  }));
+
+  document.getElementById('lc-akun-keluar').addEventListener('click', () => {
+    if (!confirm('Keluar dari akun ini? Data yang sudah tersimpan tetap ada di server.')) return;
+    try { localStorage.removeItem('prakasa_checker_v1'); localStorage.removeItem('prakasa_pencatat'); } catch(e){}
+    Promise.resolve(window.fbKeluar()).finally(() => location.reload());
+  });
+
+  /* Sesi belum diketahui: tahan di layar tunggu sampai Firebase menjawab. */
+  const mulai = () => {
+    if (!window.firebaseSiap) { setTimeout(mulai, 200); return; }
+    window.firebaseSiap.then(user => { if (!user) tampilkanForm(); });
+  };
+  mulai();
+
+  document.addEventListener('lc-auth', ev => {
+    const user = ev.detail;
+    if (user) {
+      el.hidden = true;
+      akun.classList.add('tampil');
+      document.getElementById('lc-akun-nama').textContent = user.displayName || user.email || 'Masuk';
+      masuk.disabled = false; sandi.value = ''; bilang('');
+      if (typeof ckMulai === 'function') ckMulai(user);
+    } else {
+      el.hidden = false;
+      akun.classList.remove('tampil');
+      tampilkanForm();
+    }
+  });
+})();
 </script>
 
 <script>
@@ -2534,7 +2692,7 @@ const CK_KEY  = 'prakasa_checker_v1';
 const CK_LAMA = ['lazycivileng_checker_v3'];   // nama lama, dibaca sekali lalu dipindahkan
 const CK_OLD  = 'lazycivileng_checker_v2';
 const CK = {
-  db: { activeId:null, projects:[], author:false },
+  db: { activeId:null, projects:[] },
   jobs: []
 };
 
@@ -2568,7 +2726,6 @@ function ckBersihkan(d){
   const larik = v => Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.values(v) : []);
   return {
     activeId : d.activeId || null,
-    author   : !!d.author,
     projects : larik(d.projects).filter(Boolean).map(p => ({
       id      : p.id,
       nama    : p.nama || 'Proyek tanpa nama',
@@ -2611,8 +2768,8 @@ function ckGagal(err, saat){
   if (kode.indexOf('permission') >= 0 || kode.indexOf('denied') >= 0){
     ckBadge('ditolak');
     console.error('Firebase menolak permintaan saat ' + saat + '.', err,
-      '\nPeriksa dua hal: (1) Rules di Realtime Database, (2) Anonymous sign-in '
-      + 'di Authentication > Sign-in method. Jalankan ckDiagnosa() untuk ringkasannya.');
+      '\nArtinya token pengguna tidak diterima oleh Rules. Jalankan ckDiagnosa() '
+      + 'di Console untuk melihat bagian mana yang bermasalah.');
   } else {
     ckBadge('gagal');
     console.warn('Firebase tidak terjangkau saat ' + saat + '.', err);
@@ -2623,10 +2780,12 @@ function ckGagal(err, saat){
 function ckDiagnosa(){
   const lapor = {
     'Modul Firebase termuat' : !!window.firebaseSet,
-    'Login anonim berhasil'  : !!window.firebaseUser,
+    'Sudah masuk'            : !!window.firebaseUser,
+    'Email'                  : window.firebaseUser ? (window.firebaseUser.email || '—') : '—',
     'UID'                    : window.firebaseUser ? window.firebaseUser.uid : '—',
     'Galat login'            : window.firebaseAuthError
                                  ? (window.firebaseAuthError.code || window.firebaseAuthError.message) : '—',
+    'Versi berkas'           : 'login email/sandi',
     'Galat database'         : CKS.galat ? (CKS.galat.code || CKS.galat.message) : '—',
     'Data pernah diterima'   : CKS.diterima ? 'ya' : 'belum',
     'Proyek di memori'       : CK.db.projects.length,
@@ -2634,9 +2793,11 @@ function ckDiagnosa(){
   };
   console.table(lapor);
   if (!window.firebaseSet) console.log('→ Modul gagal dimuat. Buka lewat http/https, bukan klik ganda file.');
-  else if (!window.firebaseUser) console.log('→ Nyalakan Authentication > Sign-in method > Anonymous, '
-    + 'lalu tambahkan ' + location.hostname + ' di Authentication > Settings > Authorized domains.');
-  else if (CKS.galat) console.log('→ Login sudah jalan tapi database menolak. Perbaiki Rules-nya.');
+  else if (!window.firebaseUser) console.log('→ Belum ada pengguna yang masuk. Nyalakan '
+    + 'Authentication > Sign-in method > Email/Password, buat akun di tab Users, lalu tambahkan '
+    + location.hostname + ' di Authentication > Settings > Authorized domains.');
+  else if (CKS.galat) console.log('→ Sudah masuk sebagai ' + window.firebaseUser.email
+    + ' tapi Realtime Database menolak. Tempel firebase-rules.json di Realtime Database > Rules.');
   else console.log('→ Semua sehat.');
   return lapor;
 }
@@ -2717,7 +2878,7 @@ function ckBadge(mode){
     menunggu  : ['Perubahan menunggu', '#DBF226', '#0B1F1B'],
     lokal     : ['Tersimpan di perangkat', '#EFEFEF', '#005B52'],
     gagal     : ['Jaringan putus — tersimpan di perangkat', '#FBE9E7', '#B3261E'],
-    ditolak   : ['Server menolak — cek Rules & Anonymous sign-in', '#FBE9E7', '#B3261E']
+    ditolak   : ['Server menolak — buka Console, ketik ckDiagnosa()', '#FBE9E7', '#B3261E']
   }[mode];
   if (!teks) return;
   el.textContent = teks[0];
@@ -2775,6 +2936,23 @@ document.addEventListener('focusout', () => {
 window.addEventListener('beforeunload', () => { if (CKS.tunda) { clearTimeout(CKS.tunda); ckKirim(); } });
 
 /* ---------- nama pencatat: milik perangkat, bukan milik proyek ---------- */
+/* Daftar email yang boleh memakai mode author. Sunting baris ini saat
+   ada penanggung jawab baru; Rules di server tetap penjaga sebenarnya. */
+const CK_AUTHOR_EMAIL = ['ammar@prakasa.co.id'];
+const CK_AUTHOR_LOKAL = 'prakasa_author';
+
+function ckBolehAuthor(){
+  const u = window.firebaseUser;
+  return !!(u && u.email && CK_AUTHOR_EMAIL.indexOf(u.email.toLowerCase()) >= 0);
+}
+function ckAuthorAktif(){
+  if (!ckBolehAuthor()) return false;
+  try { return localStorage.getItem(CK_AUTHOR_LOKAL) === '1'; } catch(e){ return false; }
+}
+function ckSetAuthor(on){
+  try { on ? localStorage.setItem(CK_AUTHOR_LOKAL, '1') : localStorage.removeItem(CK_AUTHOR_LOKAL); } catch(e){}
+}
+
 const CK_NAMA = 'prakasa_pencatat';
 function ckNamaLokal(){ try { return localStorage.getItem(CK_NAMA) || ''; } catch(e){ return ''; } }
 function ckSetNamaLokal(v){
@@ -2953,7 +3131,7 @@ function ckOpenApp(jagaIsian){
   const p = ckP();
   document.getElementById('ck-th-warn').value = p.thWarn;
   document.getElementById('ck-th-bad').value = p.thBad;
-  document.getElementById('ck-author').checked = !!CK.db.author;
+  document.getElementById('ck-author').checked = ckAuthorAktif();
   document.getElementById('ck-pencatat').value = ckNamaLokal();
   const tgl = document.getElementById('ck-tgl');
   tgl.value = todayISO();
@@ -3038,7 +3216,13 @@ document.getElementById('ck-renproj').addEventListener('click', ()=>{
 
 /* ---------- mode author ---------- */
 function ckApplyAuthor(){
-  const on = !!CK.db.author;
+  const on = ckAuthorAktif();
+  const kotak = document.getElementById('ck-author').closest('.ck-lock');
+  if (kotak){
+    const boleh = ckBolehAuthor();
+    kotak.style.display = boleh ? '' : 'none';
+    if (kotak.nextElementSibling) kotak.nextElementSibling.style.display = boleh ? '' : 'none';
+  }
   document.getElementById('ck-hapus').classList.toggle('hidden', !on);
   document.getElementById('ck-delproj').classList.toggle('hidden', !on);
   document.querySelectorAll('#ck-histlist [data-del]').forEach(b=>b.classList.toggle('hidden', !on));
@@ -3066,7 +3250,8 @@ function ckApplyAuthor(){
   document.getElementById('ck-lock-note').innerHTML = catatan.join('<br/>');
 }
 document.getElementById('ck-author').addEventListener('change', e=>{
-  CK.db.author = e.target.checked; ckPersist(); ckApplyAuthor();
+  ckSetAuthor(e.target.checked);   // pilihan perangkat, tidak ikut naik ke server
+  ckApplyAuthor();
 });
 
 /* ---------- tab ---------- */
@@ -3176,7 +3361,7 @@ document.getElementById('ck-job').addEventListener('change', ckRenderMats);
 document.getElementById('ck-vol').addEventListener('input', ckSegarkanMats);
 document.getElementById('ck-pencatat').addEventListener('change', e=>{
   ckSetNamaLokal(e.target.value.trim());
-  if (!CK.db.author) ckApplyAuthor();   // langsung terkunci begitu selesai diisi dan klik di luar
+  if (!ckAuthorAktif()) ckApplyAuthor();   // langsung terkunci begitu selesai diisi dan klik di luar
 });
 document.getElementById('ck-reset-form').addEventListener('click', ()=>{
   document.getElementById('ck-vol').value='';
@@ -3524,9 +3709,21 @@ document.getElementById('ck-delproj').addEventListener('click', ()=>{
   if (CK.db.projects.length) ckOpenApp(); else ckShowSetup('baru');
 });
 
-/* Tampilkan salinan lokal dulu, lalu sambungkan sinkronisasi ke server. */
-if (ckMuatLokal()) ckOpenApp(); else ckShowSetup('baru');
-startRealtimeSync();
+/* Checker baru hidup setelah ada pengguna yang masuk. Dipanggil oleh
+   layar login lewat peristiwa lc-auth, jadi tidak ada permintaan ke
+   database sebelum tokennya terbit. */
+let ckSudahMulai = false;
+function ckMulai(user){
+  if (ckSudahMulai) return;
+  ckSudahMulai = true;
+  if (user && !ckNamaLokal()){
+    ckSetNamaLokal(user.displayName || (user.email || '').split('@')[0]);
+  }
+  ckApplyAuthor();   // sembunyikan kendali author sebelum layar apa pun tampil
+  if (ckMuatLokal()) ckOpenApp(); else ckShowSetup('baru');
+  startRealtimeSync();
+}
+window.ckMulai = ckMulai;
 
 /* ============================================================
    IDENTIFICATOR
