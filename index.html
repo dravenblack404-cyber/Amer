@@ -2533,6 +2533,15 @@ function ckPersist() {
   }
 }
 
+/* ---------- penyimpanan Real-time ke Firebase ---------- */
+// Menggantikan fungsi ckPersist lama
+function ckPersist() {
+  if (window.firebaseSet && window.firebaseRef) {
+    // Tembak data CK.db ke server Firebase!
+    window.firebaseSet(window.firebaseRef, CK.db);
+  }
+}
+
 // Menggantikan ckRestore lama dengan CCTV real-time
 function startRealtimeSync() {
   if (window.firebaseOnValue && window.firebaseRef) {
@@ -2562,30 +2571,6 @@ function startRealtimeSync() {
     // Tunggu sepersekian detik kalau script Firebase belum selesai dimuat
     setTimeout(startRealtimeSync, 500);
   }
-}
-
-// Nyalakan sinkronisasi saat web pertama kali dibuka!
-// (Ganti kode "if (ckRestore()) ckOpenApp();" di paling bawah script-mu dengan baris ini)
-startRealtimeSync();
-  // pindahkan data versi lama yang hanya mengenal satu proyek
-  const old = lcStore.get(CK_OLD);
-  if (old){
-    try{
-      const s = JSON.parse(old);
-      if (s && Array.isArray(s.base) && s.base.length){
-        const p = {
-          id: ckNewId(), nama: s.proj || 'Proyek tanpa nama', dibuat: todayISO(),
-          base: s.base, entries: s.entries||[],
-          thWarn: s.thWarn??5, thBad: s.thBad??15,
-          seq: (s.entries||[]).reduce((m,e)=>Math.max(m,(e.id||0)+1), 1)
-        };
-        CK.db = {activeId:p.id, projects:[p], author:false, pencatat:''};
-        ckPersist();
-        return true;
-      }
-    }catch(e){}
-  }
-  return false;
 }
 
 /* ---------- baca sheet Rincian Bahan ---------- */
