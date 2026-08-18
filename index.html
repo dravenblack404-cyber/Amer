@@ -2936,10 +2936,10 @@ function ckRecalcRow(e){
 ['ck-job','ck-vol'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ckRenderMats);
 });
-document.getElementById('ck-pencatat').addEventListener('input', e=>{
+document.getElementById('ck-pencatat').addEventListener('change', e=>{
   CK.db.pencatat = e.target.value.trim();
   ckPersist();
-  if (!CK.db.author) ckApplyAuthor();   // langsung terkunci begitu diisi
+  if (!CK.db.author) ckApplyAuthor();   // langsung terkunci begitu selesai diisi dan klik di luar
 });
 document.getElementById('ck-reset-form').addEventListener('click', ()=>{
   document.getElementById('ck-vol').value='';
