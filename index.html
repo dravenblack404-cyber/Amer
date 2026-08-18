@@ -2515,7 +2515,7 @@ const CK_KEY  = 'prakasa_checker_v1';
 const CK_LAMA = ['lazycivileng_checker_v3'];   // nama lama, dibaca sekali lalu dipindahkan
 const CK_OLD  = 'lazycivileng_checker_v2';
 const CK = {
-  db: { activeId:null, projects:[], author:false, pencatat:'' },
+  db: { activeId:null, projects:[], author:false },
   jobs: []
 };
 
@@ -2524,53 +2524,192 @@ function ckDilacak(kategori){ return normKey(kategori) !== 'tenaga'; }
 function ckP(){ return CK.db.projects.find(p=>p.id===CK.db.activeId) || null; }
 function ckNewId(){ return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
 
-/* ---------- penyimpanan Real-time ke Firebase ---------- */
-// Menggantikan fungsi ckPersist lama
-function ckPersist() {
-  if (window.firebaseSet && window.firebaseRef) {
-    // Tembak data CK.db ke server Firebase!
-    window.firebaseSet(window.firebaseRef, CK.db);
+/* ---------- sinkronisasi Firebase ----------
+   Tiga jebakan yang ditangani di sini:
+   1. Setiap tulisan kita sendiri memantul balik lewat onValue. Kalau gemanya
+      tidak disaring, layar dirender ulang di tengah pengetikan dan kolom isian
+      ikut terhapus — inilah yang bikin isian terasa terkunci sejak huruf pertama.
+   2. Realtime Database membuang array dan objek kosong, jadi data yang pulang
+      dari server harus dinormalkan lagi sebelum dipakai.
+   3. Sinyal di lapangan sering putus, jadi salinan lokal tetap disimpan.
+---------------------------------------------------------------- */
+const CKS = {
+  tunda: null,        // timer penunda pengiriman
+  terkirim: null,     // sidik jari data terakhir yang kita kirim sendiri
+  menerapkan: false,  // sedang memasang data dari server
+  tertunda: null      // data server yang menunggu sampai pengetikan selesai
+};
+
+/* Rapikan bentuk data, apa pun yang dikembalikan server. */
+function ckBersihkan(d){
+  d = d || {};
+  const larik = v => Array.isArray(v) ? v : (v && typeof v === 'object' ? Object.values(v) : []);
+  return {
+    activeId : d.activeId || null,
+    author   : !!d.author,
+    projects : larik(d.projects).filter(Boolean).map(p => ({
+      id      : p.id,
+      nama    : p.nama || 'Proyek tanpa nama',
+      dibuat  : p.dibuat || todayISO(),
+      base    : larik(p.base).filter(Boolean),
+      entries : larik(p.entries).filter(Boolean).map(e => Object.assign({}, e, {real: e.real || {}})),
+      thWarn  : p.thWarn == null ? 5  : p.thWarn,
+      thBad   : p.thBad  == null ? 15 : p.thBad,
+      seq     : p.seq    == null ? 1  : p.seq
+    }))
+  };
+}
+
+/* Simpan: langsung ke perangkat, ke server setelah pengetikan berhenti. */
+function ckPersist(){
+  if (CKS.menerapkan) return;                 // jangan tulis balik data yang baru diterima
+  try { localStorage.setItem(CK_KEY, JSON.stringify(ckBersihkan(CK.db))); } catch(e){}
+  ckBadge('nyimpan');
+  clearTimeout(CKS.tunda);
+  CKS.tunda = setTimeout(ckKirim, 600);
+}
+
+function ckKirim(){
+  CKS.tunda = null;
+  if (!(window.firebaseSet && window.firebaseRef)) { ckBadge('lokal'); return; }
+  const muatan = ckBersihkan(CK.db);
+  CKS.terkirim = JSON.stringify(muatan);
+  Promise.resolve(window.firebaseSet(window.firebaseRef, muatan))
+    .then(()=> ckBadge('tersimpan'))
+    .catch(err => { console.warn('Firebase gagal menyimpan:', err); ckBadge('gagal'); });
+}
+
+/* Sedang ada kolom isian yang dipegang pengguna? */
+function ckSedangDiisi(){
+  const a = document.activeElement;
+  if (!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;
+  return !!(a.closest && a.closest('#ck-setup, #ck-app'));
+}
+
+/* Pasang data server tanpa merusak isian yang sedang dikerjakan. */
+function ckTerapkan(data){
+  CKS.menerapkan = true;
+  try {
+    CK.db = data;
+    if (CK.db.activeId && !CK.db.projects.some(p => p.id === CK.db.activeId)) CK.db.activeId = null;
+    if (!CK.db.activeId && CK.db.projects.length) CK.db.activeId = CK.db.projects[0].id;
+    ckBuildJobs();
+    if (CK.db.projects.length) ckOpenApp(true); else ckShowSetup('baru');
+  } finally {
+    CKS.menerapkan = false;
   }
 }
 
-/* ---------- penyimpanan Real-time ke Firebase ---------- */
-// Menggantikan fungsi ckPersist lama
-function ckPersist() {
-  if (window.firebaseSet && window.firebaseRef) {
-    // Tembak data CK.db ke server Firebase!
-    window.firebaseSet(window.firebaseRef, CK.db);
+/* Potret isian form sebelum render ulang. */
+function ckAmbilIsian(){
+  const v = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  const qty = {};
+  document.querySelectorAll('#ck-matwrap input[data-real]').forEach(i => {
+    if (i.value !== '') qty[i.dataset.real] = i.value;
+  });
+  const f = document.activeElement;
+  return {
+    job: v('ck-job'), vol: v('ck-vol'), catatan: v('ck-catatan'), tgl: v('ck-tgl'), qty,
+    fokus     : f && f.id ? f.id : null,
+    fokusReal : f && f.dataset && f.dataset.real != null ? f.dataset.real : null,
+    kursor    : f && typeof f.selectionStart === 'number' ? f.selectionStart : null
+  };
+}
+
+function ckPasangIsian(s){
+  const set = (id, val) => { const e = document.getElementById(id); if (e && val) e.value = val; };
+  const job = document.getElementById('ck-job');
+  if (s.job !== '' && job && job.querySelector('option[value="' + s.job + '"]')) job.value = s.job;
+  set('ck-vol', s.vol); set('ck-catatan', s.catatan); set('ck-tgl', s.tgl);
+  ckRenderMats();
+  Object.keys(s.qty).forEach(k => {
+    const i = document.querySelector('#ck-matwrap input[data-real="' + k + '"]');
+    if (i) { i.value = s.qty[k]; ckRecalcRow({target: i}); }
+  });
+  let el = null;
+  if (s.fokusReal != null) el = document.querySelector('#ck-matwrap input[data-real="' + s.fokusReal + '"]');
+  else if (s.fokus)        el = document.getElementById(s.fokus);
+  if (el) {
+    el.focus();
+    if (s.kursor != null) { try { el.setSelectionRange(s.kursor, s.kursor); } catch(e){} }
   }
 }
 
-// Menggantikan ckRestore lama dengan CCTV real-time
-function startRealtimeSync() {
-  if (window.firebaseOnValue && window.firebaseRef) {
-    // CCTV ini bakal memantau perubahan data terus-menerus
-    window.firebaseOnValue(window.firebaseRef, (snapshot) => {
-      const data = snapshot.val();
-      
-      if (data) {
-        // Timpa data lokal dengan data terbaru dari Firebase
-        CK.db = data;
-        
-        // Render ulang layar supaya perubahannya langsung kelihatan
-        ckBuildJobs();
-        if (CK.db.projects && CK.db.projects.length) {
-            ckOpenApp();
-        } else {
-            ckShowSetup('baru');
-        }
-      } else {
-        // Kalau database masih bener-bener kosong
-        if (!CK.db.projects || CK.db.projects.length === 0) {
-            ckShowSetup('baru');
-        }
-      }
-    });
-  } else {
-    // Tunggu sepersekian detik kalau script Firebase belum selesai dimuat
-    setTimeout(startRealtimeSync, 500);
+/* Lencana status kecil di pojok, biar ketahuan data sudah naik atau belum. */
+function ckBadge(mode){
+  let el = document.getElementById('ck-sync-badge');
+  if (!el){
+    el = document.createElement('div');
+    el.id = 'ck-sync-badge';
+    el.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:9998;padding:7px 12px;'
+      + 'border-radius:999px;font:600 11.5px/1 Archivo,system-ui,sans-serif;letter-spacing:.02em;'
+      + 'border:1.5px solid #005B52;background:#EFEFEF;color:#005B52;pointer-events:none;'
+      + 'opacity:0;transition:opacity .25s ease;box-shadow:0 2px 10px rgba(0,44,40,.18)';
+    document.body.appendChild(el);
   }
+  const teks = {
+    nyimpan   : ['Menyimpan…',        '#EFEFEF', '#005B52'],
+    tersimpan : ['Tersimpan',          '#005B52', '#DBF226'],
+    sinkron   : ['Data diperbarui',    '#005B52', '#DBF226'],
+    menunggu  : ['Perubahan menunggu', '#DBF226', '#0B1F1B'],
+    lokal     : ['Tersimpan di perangkat', '#EFEFEF', '#005B52'],
+    gagal     : ['Offline — tersimpan di perangkat', '#FBE9E7', '#B3261E']
+  }[mode];
+  if (!teks) return;
+  el.textContent = teks[0];
+  el.style.background = teks[1];
+  el.style.color = teks[2];
+  el.style.borderColor = teks[2];
+  el.style.opacity = '1';
+  clearTimeout(ckBadge._t);
+  if (mode !== 'gagal') ckBadge._t = setTimeout(()=>{ el.style.opacity = '0'; }, 1800);
+}
+
+/* Baca salinan lokal dulu supaya layar langsung terisi walau sinyal lemot. */
+function ckMuatLokal(){
+  try {
+    const raw = localStorage.getItem(CK_KEY);
+    if (!raw) return false;
+    const d = ckBersihkan(JSON.parse(raw));
+    if (!d.projects.length) return false;
+    CK.db = d;
+    if (!CK.db.activeId) CK.db.activeId = CK.db.projects[0].id;
+    ckBuildJobs();
+    return true;
+  } catch(e){ return false; }
+}
+
+function startRealtimeSync(){
+  if (!(window.firebaseOnValue && window.firebaseRef)) { setTimeout(startRealtimeSync, 300); return; }
+  window.firebaseOnValue(window.firebaseRef, snapshot => {
+    const masuk = ckBersihkan(snapshot.val());
+    const sidik = JSON.stringify(masuk);
+    if (sidik === CKS.terkirim) return;                       // gema tulisan sendiri, abaikan
+    if (sidik === JSON.stringify(ckBersihkan(CK.db))) return;  // isinya sama saja
+    if (ckSedangDiisi()) { CKS.tertunda = masuk; ckBadge('menunggu'); return; }
+    ckTerapkan(masuk);
+    ckBadge('sinkron');
+  }, err => { console.warn('Firebase terputus:', err); ckBadge('gagal'); });
+}
+
+/* Perubahan yang ditunda dipasang begitu pengguna melepas kolom isian. */
+document.addEventListener('focusout', () => {
+  setTimeout(() => {
+    if (CKS.tertunda && !ckSedangDiisi()) {
+      const d = CKS.tertunda; CKS.tertunda = null;
+      ckTerapkan(d); ckBadge('sinkron');
+    }
+  }, 200);
+});
+
+/* Jangan sampai ketikan terakhir hilang saat tab ditutup. */
+window.addEventListener('beforeunload', () => { if (CKS.tunda) { clearTimeout(CKS.tunda); ckKirim(); } });
+
+/* ---------- nama pencatat: milik perangkat, bukan milik proyek ---------- */
+const CK_NAMA = 'prakasa_pencatat';
+function ckNamaLokal(){ try { return localStorage.getItem(CK_NAMA) || ''; } catch(e){ return ''; } }
+function ckSetNamaLokal(v){
+  try { v ? localStorage.setItem(CK_NAMA, v) : localStorage.removeItem(CK_NAMA); } catch(e){}
 }
 
 /* ---------- baca sheet Rincian Bahan ---------- */
@@ -2737,15 +2876,16 @@ document.getElementById('ck-load').addEventListener('click', ()=>{
   ckOpenApp();
 });
 
-function ckOpenApp(){
+function ckOpenApp(jagaIsian){
   if (!CK.db.projects.length){ ckShowSetup('baru'); return; }
+  const isian = jagaIsian ? ckAmbilIsian() : null;
   document.getElementById('ck-setup').classList.add('hidden');
   document.getElementById('ck-app').classList.remove('hidden');
   const p = ckP();
   document.getElementById('ck-th-warn').value = p.thWarn;
   document.getElementById('ck-th-bad').value = p.thBad;
   document.getElementById('ck-author').checked = !!CK.db.author;
-  document.getElementById('ck-pencatat').value = CK.db.pencatat || '';
+  document.getElementById('ck-pencatat').value = ckNamaLokal();
   const tgl = document.getElementById('ck-tgl');
   tgl.value = todayISO();
   tgl.max = todayISO();          // catatan maju tidak pernah masuk akal
@@ -2756,6 +2896,7 @@ function ckOpenApp(){
   ckRenderMats();
   ckApplyAuthor();
   ckRenderAll();
+  if (isian) ckPasangIsian(isian);
 }
 
 /* ---------- ringkasan tiap proyek ---------- */
@@ -2841,15 +2982,17 @@ function ckApplyAuthor(){
 
   // Nama pencatat dikunci begitu terisi, supaya satu perangkat satu nama.
   const nm = document.getElementById('ck-pencatat');
-  const terkunci = !on && !!CK.db.pencatat;
+  const nama = ckNamaLokal();
+  const terkunci = !on && !!nama;
   nm.readOnly = terkunci;
+  if (nama && !nm.value) nm.value = nama;
 
   const catatan = [];
   catatan.push(on
     ? 'Mode author aktif &mdash; tanggal boleh dimundurkan dan nama pencatat boleh diganti.'
-    : 'Tanggal terkunci ke hari ini. Nama pencatat ' + (CK.db.pencatat
-        ? 'sudah terkunci sebagai <b>'+esc(CK.db.pencatat)+'</b> di perangkat ini.'
-        : 'akan terkunci begitu kamu isi.'));
+    : 'Tanggal terkunci ke hari ini. Nama pencatat ' + (nama
+        ? 'sudah terkunci sebagai <b>'+esc(nama)+'</b> di perangkat ini.'
+        : 'akan terkunci begitu kamu isi lalu klik di luar kolom.'));
   catatan.push('Waktu penyimpanan sebenarnya selalu ikut tercatat, jadi catatan mundur tetap ketahuan.');
   document.getElementById('ck-lock-note').innerHTML = catatan.join('<br/>');
 }
@@ -2884,11 +3027,7 @@ function ckRenderMats(){
     return;
   }
   const j = CK.jobs[+idx];
-  const cum = ckCum(j.job);
-  const sisa = j.vol - cum;
-  info.innerHTML = 'Volume kontrak <b>'+fmtNum(j.vol,2)+' '+esc(j.satuan)+'</b> &middot; '
-    + 'sudah tercatat <b>'+fmtNum(cum,2)+'</b> &middot; sisa <b>'+fmtNum(sisa,2)+'</b>'
-    + (vol>0 && vol>sisa+1e-9 ? ' <span class="ck-pill bad" style="margin-left:6px;">volume hari ini melebihi sisa</span>' : '');
+  info.innerHTML = ckJobInfo(j, vol);
 
   if (!j.mats.length){
     wrap.innerHTML = '<div class="ck-alert info">Pekerjaan ini tidak punya komponen bahan atau alat &mdash; '
@@ -2918,6 +3057,37 @@ function ckRenderMats(){
   wrap.querySelectorAll('input[data-real]').forEach(inp=>inp.addEventListener('input', ckRecalcRow));
   document.getElementById('ck-save').disabled = !(vol>0);
 }
+/* Baris ringkasan pekerjaan, dipakai ulang saat volume diubah. */
+function ckJobInfo(j, vol){
+  const cum = ckCum(j.job);
+  const sisa = j.vol - cum;
+  return 'Volume kontrak <b>'+fmtNum(j.vol,2)+' '+esc(j.satuan)+'</b> &middot; '
+    + 'sudah tercatat <b>'+fmtNum(cum,2)+'</b> &middot; sisa <b>'+fmtNum(sisa,2)+'</b>'
+    + (vol>0 && vol>sisa+1e-9 ? ' <span class="ck-pill bad" style="margin-left:6px;">volume hari ini melebihi sisa</span>' : '');
+}
+
+/* Volume berubah: cukup hitung ulang angkanya, tabel tidak dibongkar
+   supaya kolom Dipakai yang sudah diketik tidak ikut hilang. */
+function ckSegarkanMats(){
+  const sel = document.getElementById('ck-job');
+  if (sel.value === '') { ckRenderMats(); return; }
+  const j = CK.jobs[+sel.value];
+  if (!j) { ckRenderMats(); return; }
+  const vol = lcNum(document.getElementById('ck-vol').value) || 0;
+  document.getElementById('ck-jobinfo').innerHTML = ckJobInfo(j, vol);
+  const baris = document.querySelectorAll('#ck-matwrap tr[data-mi]');
+  if (!baris.length) { document.getElementById('ck-save').disabled = !(vol>0); return; }
+  baris.forEach(tr => {
+    const m = j.mats[+tr.dataset.mi];
+    if (!m) return;
+    const teori = tr.querySelector('[data-teori]');
+    if (teori) teori.textContent = fmtNum(vol*m.koef, 4);
+    const inp = tr.querySelector('input[data-real]');
+    if (inp) ckRecalcRow({target: inp});
+  });
+  document.getElementById('ck-save').disabled = !(vol>0);
+}
+
 function ckRecalcRow(e){
   const tr = e.target.closest('tr');
   const vol = lcNum(document.getElementById('ck-vol').value) || 0;
@@ -2933,12 +3103,10 @@ function ckRecalcRow(e){
     + kata+' '+fmtNum(Math.abs(st.sel),3)+'</span>';
   const rc = ckRowCls(st.cls); if (rc) tr.classList.add(rc);
 }
-['ck-job','ck-vol'].forEach(id=>{
-  document.getElementById(id).addEventListener('input', ckRenderMats);
-});
+document.getElementById('ck-job').addEventListener('change', ckRenderMats);
+document.getElementById('ck-vol').addEventListener('input', ckSegarkanMats);
 document.getElementById('ck-pencatat').addEventListener('change', e=>{
-  CK.db.pencatat = e.target.value.trim();
-  ckPersist();
+  ckSetNamaLokal(e.target.value.trim());
   if (!CK.db.author) ckApplyAuthor();   // langsung terkunci begitu selesai diisi dan klik di luar
 });
 document.getElementById('ck-reset-form').addEventListener('click', ()=>{
@@ -3144,12 +3312,15 @@ function ckNeraca(){
 }
 
 /* ---------- ambang ---------- */
+let ckAmbangTimer = null;
 ['ck-th-warn','ck-th-bad'].forEach(id=>{
   document.getElementById(id).addEventListener('input', ()=>{
     const p = ckP(); if (!p) return;
     p.thWarn = lcNum(document.getElementById('ck-th-warn').value) ?? 5;
     p.thBad  = lcNum(document.getElementById('ck-th-bad').value) ?? 15;
-    ckPersist(); ckRenderAll(); ckRenderMats();
+    ckPersist();
+    clearTimeout(ckAmbangTimer);
+    ckAmbangTimer = setTimeout(()=>{ ckStats(); ckProgress(); ckHistory(); ckNeraca(); ckSegarkanMats(); }, 250);
   });
 });
 
@@ -3284,7 +3455,8 @@ document.getElementById('ck-delproj').addEventListener('click', ()=>{
   if (CK.db.projects.length) ckOpenApp(); else ckShowSetup('baru');
 });
 
-/* Nyalakan sinkronisasi Firebase saat web pertama kali dibuka */
+/* Tampilkan salinan lokal dulu, lalu sambungkan sinkronisasi ke server. */
+if (ckMuatLokal()) ckOpenApp(); else ckShowSetup('baru');
 startRealtimeSync();
 
 /* ============================================================
