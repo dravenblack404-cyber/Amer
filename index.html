@@ -3284,8 +3284,8 @@ document.getElementById('ck-delproj').addEventListener('click', ()=>{
   if (CK.db.projects.length) ckOpenApp(); else ckShowSetup('baru');
 });
 
-/* buka kembali sesi sebelumnya */
-if (ckRestore()) ckOpenApp();
+/* Nyalakan sinkronisasi Firebase saat web pertama kali dibuka */
+startRealtimeSync();
 
 /* ============================================================
    IDENTIFICATOR
