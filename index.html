@@ -1077,6 +1077,37 @@ tr.warnrow td{background:#FDF8E8 !important;}
   </div>
 </section>
 
+ <script type="module">
+  // 1. Import Firebase khusus untuk file HTML biasa
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
+  import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-database.js";
+
+  // 2. KTP Firebase kamu nih!
+  const firebaseConfig = {
+    apiKey: "AIzaSyBMNg1GqhjgbV-mLmx-9C2daRW6bTis6Es",
+    authDomain: "amarprakasa-a0d51.firebaseapp.com",
+    databaseURL: "https://amarprakasa-a0d51-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "amarprakasa-a0d51",
+    storageBucket: "amarprakasa-a0d51.firebasestorage.app",
+    messagingSenderId: "793825567872",
+    appId: "1:793825567872:web:2325d98132695a1fdaf265",
+    measurementId: "G-BTMMLXG31Q"
+  };
+
+  // 3. Nyalain mesin Firebase-nya
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  
+  // 4. Bikin 'folder' di database khusus buat data Prakasa
+  const dbRef = ref(db, 'prakasa_db');
+
+  // 5. Sambungin fungsi Firebase ke 'window' biar bisa dipakai sama script UI kamu
+  window.firebaseDB = db;
+  window.firebaseRef = dbRef;
+  window.firebaseSet = set;
+  window.firebaseOnValue = onValue;
+</script>
+
 <script>
 
 /* ============================================================
@@ -2493,25 +2524,49 @@ function ckDilacak(kategori){ return normKey(kategori) !== 'tenaga'; }
 function ckP(){ return CK.db.projects.find(p=>p.id===CK.db.activeId) || null; }
 function ckNewId(){ return 'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
 
-function ckPersist(){ lcStore.set(CK_KEY, JSON.stringify(CK.db)); }
-function ckRestore(){
-  let raw = lcStore.get(CK_KEY);
-  if (!raw){
-    for (const k of CK_LAMA){            // data dari versi bernama Lazy Civileng
-      const lama = lcStore.get(k);
-      if (lama){ raw = lama; lcStore.set(CK_KEY, lama); break; }
-    }
+/* ---------- penyimpanan Real-time ke Firebase ---------- */
+// Menggantikan fungsi ckPersist lama
+function ckPersist() {
+  if (window.firebaseSet && window.firebaseRef) {
+    // Tembak data CK.db ke server Firebase!
+    window.firebaseSet(window.firebaseRef, CK.db);
   }
-  if (raw){
-    try{
-      const db = JSON.parse(raw);
-      if (db && Array.isArray(db.projects) && db.projects.length){
-        CK.db = Object.assign({activeId:null, projects:[], author:false, pencatat:''}, db);
-        if (!ckP()) CK.db.activeId = CK.db.projects[0].id;
-        return true;
+}
+
+// Menggantikan ckRestore lama dengan CCTV real-time
+function startRealtimeSync() {
+  if (window.firebaseOnValue && window.firebaseRef) {
+    // CCTV ini bakal memantau perubahan data terus-menerus
+    window.firebaseOnValue(window.firebaseRef, (snapshot) => {
+      const data = snapshot.val();
+      
+      if (data) {
+        // Timpa data lokal dengan data terbaru dari Firebase
+        CK.db = data;
+        
+        // Render ulang layar supaya perubahannya langsung kelihatan
+        ckBuildJobs();
+        if (CK.db.projects && CK.db.projects.length) {
+            ckOpenApp();
+        } else {
+            ckShowSetup('baru');
+        }
+      } else {
+        // Kalau database masih bener-bener kosong
+        if (!CK.db.projects || CK.db.projects.length === 0) {
+            ckShowSetup('baru');
+        }
       }
-    }catch(e){}
+    });
+  } else {
+    // Tunggu sepersekian detik kalau script Firebase belum selesai dimuat
+    setTimeout(startRealtimeSync, 500);
   }
+}
+
+// Nyalakan sinkronisasi saat web pertama kali dibuka!
+// (Ganti kode "if (ckRestore()) ckOpenApp();" di paling bawah script-mu dengan baris ini)
+startRealtimeSync();
   // pindahkan data versi lama yang hanya mengenal satu proyek
   const old = lcStore.get(CK_OLD);
   if (old){
