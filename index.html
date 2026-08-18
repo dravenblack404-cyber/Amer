@@ -1081,6 +1081,7 @@ tr.warnrow td{background:#FDF8E8 !important;}
   // 1. Import Firebase khusus untuk file HTML biasa
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
   import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-database.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-auth.js";
 
   // 2. KTP Firebase kamu nih!
   const firebaseConfig = {
@@ -1106,6 +1107,24 @@ tr.warnrow td{background:#FDF8E8 !important;}
   window.firebaseRef = dbRef;
   window.firebaseSet = set;
   window.firebaseOnValue = onValue;
+
+  // 6. Masuk sebagai pengguna anonim. Rules butuh ini supaya database boleh
+  //    dikunci dari orang luar tanpa memaksa pengguna membuat akun.
+  const auth = getAuth(app);
+  window.firebaseAuth = auth;
+  window.firebaseSiap = new Promise(resolve => {
+    let selesai = false;
+    const beres = v => { if (!selesai) { selesai = true; resolve(v); } };
+    onAuthStateChanged(auth, user => { if (user) { window.firebaseUser = user; beres(user); } });
+    signInAnonymously(auth).catch(err => {
+      window.firebaseAuthError = err;
+      console.error('Login anonim gagal:', err.code || err.message,
+        '\nAktifkan Authentication > Sign-in method > Anonymous di Firebase Console, '
+        + 'lalu tambahkan domain situs ini di Authentication > Settings > Authorized domains.');
+      beres(null);
+    });
+    setTimeout(() => beres(null), 8000);   // jangan menggantung kalau jaringan mati
+  });
 </script>
 
 <script>
@@ -2535,6 +2554,9 @@ function ckNewId(){ return 'p'+Date.now().toString(36)+Math.random().toString(36
 ---------------------------------------------------------------- */
 const CKS = {
   tunda: null,        // timer penunda pengiriman
+  galat: null,        // galat terakhir dari Firebase
+  diterima: false,    // sudah pernah menerima data dari server?
+  loginSelesai: false,
   terkirim: null,     // sidik jari data terakhir yang kita kirim sendiri
   menerapkan: false,  // sedang memasang data dari server
   tertunda: null      // data server yang menunggu sampai pengetikan selesai
@@ -2572,12 +2594,53 @@ function ckPersist(){
 function ckKirim(){
   CKS.tunda = null;
   if (!(window.firebaseSet && window.firebaseRef)) { ckBadge('lokal'); return; }
-  const muatan = ckBersihkan(CK.db);
-  CKS.terkirim = JSON.stringify(muatan);
-  Promise.resolve(window.firebaseSet(window.firebaseRef, muatan))
-    .then(()=> ckBadge('tersimpan'))
-    .catch(err => { console.warn('Firebase gagal menyimpan:', err); ckBadge('gagal'); });
+  const kirim = () => {
+    const muatan = ckBersihkan(CK.db);
+    CKS.terkirim = JSON.stringify(muatan);
+    Promise.resolve(window.firebaseSet(window.firebaseRef, muatan))
+      .then(()=> { CKS.galat = null; ckBadge('tersimpan'); })
+      .catch(err => ckGagal(err, 'menyimpan'));
+  };
+  if (window.firebaseSiap) window.firebaseSiap.then(kirim); else kirim();
 }
+
+/* Bedakan "server menolak" dari "jaringan mati" — dua masalah, dua obat. */
+function ckGagal(err, saat){
+  CKS.galat = err;
+  const kode = String((err && (err.code || err.message)) || err).toLowerCase();
+  if (kode.indexOf('permission') >= 0 || kode.indexOf('denied') >= 0){
+    ckBadge('ditolak');
+    console.error('Firebase menolak permintaan saat ' + saat + '.', err,
+      '\nPeriksa dua hal: (1) Rules di Realtime Database, (2) Anonymous sign-in '
+      + 'di Authentication > Sign-in method. Jalankan ckDiagnosa() untuk ringkasannya.');
+  } else {
+    ckBadge('gagal');
+    console.warn('Firebase tidak terjangkau saat ' + saat + '.', err);
+  }
+}
+
+/* Ketik ckDiagnosa() di Console kalau lencana tidak hijau. */
+function ckDiagnosa(){
+  const lapor = {
+    'Modul Firebase termuat' : !!window.firebaseSet,
+    'Login anonim berhasil'  : !!window.firebaseUser,
+    'UID'                    : window.firebaseUser ? window.firebaseUser.uid : '—',
+    'Galat login'            : window.firebaseAuthError
+                                 ? (window.firebaseAuthError.code || window.firebaseAuthError.message) : '—',
+    'Galat database'         : CKS.galat ? (CKS.galat.code || CKS.galat.message) : '—',
+    'Data pernah diterima'   : CKS.diterima ? 'ya' : 'belum',
+    'Proyek di memori'       : CK.db.projects.length,
+    'Asal halaman'           : location.origin
+  };
+  console.table(lapor);
+  if (!window.firebaseSet) console.log('→ Modul gagal dimuat. Buka lewat http/https, bukan klik ganda file.');
+  else if (!window.firebaseUser) console.log('→ Nyalakan Authentication > Sign-in method > Anonymous, '
+    + 'lalu tambahkan ' + location.hostname + ' di Authentication > Settings > Authorized domains.');
+  else if (CKS.galat) console.log('→ Login sudah jalan tapi database menolak. Perbaiki Rules-nya.');
+  else console.log('→ Semua sehat.');
+  return lapor;
+}
+window.ckDiagnosa = ckDiagnosa;
 
 /* Sedang ada kolom isian yang dipegang pengguna? */
 function ckSedangDiisi(){
@@ -2653,7 +2716,8 @@ function ckBadge(mode){
     sinkron   : ['Data diperbarui',    '#005B52', '#DBF226'],
     menunggu  : ['Perubahan menunggu', '#DBF226', '#0B1F1B'],
     lokal     : ['Tersimpan di perangkat', '#EFEFEF', '#005B52'],
-    gagal     : ['Offline — tersimpan di perangkat', '#FBE9E7', '#B3261E']
+    gagal     : ['Jaringan putus — tersimpan di perangkat', '#FBE9E7', '#B3261E'],
+    ditolak   : ['Server menolak — cek Rules & Anonymous sign-in', '#FBE9E7', '#B3261E']
   }[mode];
   if (!teks) return;
   el.textContent = teks[0];
@@ -2662,7 +2726,7 @@ function ckBadge(mode){
   el.style.borderColor = teks[2];
   el.style.opacity = '1';
   clearTimeout(ckBadge._t);
-  if (mode !== 'gagal') ckBadge._t = setTimeout(()=>{ el.style.opacity = '0'; }, 1800);
+  if (mode !== 'gagal' && mode !== 'ditolak') ckBadge._t = setTimeout(()=>{ el.style.opacity = '0'; }, 1800);
 }
 
 /* Baca salinan lokal dulu supaya layar langsung terisi walau sinyal lemot. */
@@ -2681,7 +2745,12 @@ function ckMuatLokal(){
 
 function startRealtimeSync(){
   if (!(window.firebaseOnValue && window.firebaseRef)) { setTimeout(startRealtimeSync, 300); return; }
+  if (window.firebaseSiap && !CKS.loginSelesai) {
+    window.firebaseSiap.then(() => { CKS.loginSelesai = true; startRealtimeSync(); });
+    return;   // penanda dipasang SETELAH janji selesai, bukan sebelum, supaya tidak berputar
+  }
   window.firebaseOnValue(window.firebaseRef, snapshot => {
+    CKS.diterima = true;
     const masuk = ckBersihkan(snapshot.val());
     const sidik = JSON.stringify(masuk);
     if (sidik === CKS.terkirim) return;                       // gema tulisan sendiri, abaikan
@@ -2689,7 +2758,7 @@ function startRealtimeSync(){
     if (ckSedangDiisi()) { CKS.tertunda = masuk; ckBadge('menunggu'); return; }
     ckTerapkan(masuk);
     ckBadge('sinkron');
-  }, err => { console.warn('Firebase terputus:', err); ckBadge('gagal'); });
+  }, err => ckGagal(err, 'membaca'));
 }
 
 /* Perubahan yang ditunda dipasang begitu pengguna melepas kolom isian. */
